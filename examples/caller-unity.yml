@@ -1,0 +1,26 @@
+# Put this file in your game repo as .github/workflows/luxodd-build.yml.
+# Pin luxodd/game-build by full commit SHA, not by branch or tag.
+name: Luxodd build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  luxodd:
+    uses: luxodd/game-build/.github/workflows/unity-webgl.yml@<full-commit-sha>
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      project-path: .        # folder that holds Assets/ and ProjectSettings/
+      plugin-version: 1.2.0
+      graphics: webgl2       # or webgpu (Unity 6000.x only)
+      signing: cosign        # github only for public repos (Enterprise Cloud for private)
+      runner: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    secrets:
+      UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+      UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+      UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}

@@ -1,0 +1,196 @@
+# luxodd/game-build — reusable Unity web build with plugin attestation.
+# DRAFT 2026-11-16, not yet published. Design: docs/design/plugin-attestation-design.md.
+#
+# A game repo calls this with one short workflow (examples/caller-unity.yml). In order it:
+#   1. checks out the game and this repo at the exact commit the caller pinned;
+#   2. installs the pinned official plugin over the project's copy, checking the package hash;
+#   3. verifies every plugin file against the published hash list;
+#   4. fails on editor build hooks that reference the plugin;
+#   5. builds for the web with fixed settings (GameCI);
+#   6. re-verifies the plugin files, hashes every build file, and attests the result.
+# The attestation is made inside this reusable workflow, so its signer is luxodd/game-build.
+#
+# Builds on luxodd/global-ci PR #2 (unity-webgl-deploy.yml): same pinned actions, Library cache,
+# runner input and job.workflow_sha pinning. Unlike that pipeline it never deploys: the signed
+# artifact goes to a game's draft (LUXL-2710), and promotion is a human approval.
+
+name: Luxodd Unity web build
+
+on:
+  workflow_call:
+    inputs:
+      project-path:
+        description: Unity project folder inside the caller repo.
+        type: string
+        default: .
+      plugin-version:
+        description: Official Unity plugin version; must have a hash list in plugin-manifests/unity/.
+        type: string
+        default: 1.2.0
+      graphics:
+        description: One graphics target per build, webgl2 or webgpu (WebGPU needs Unity 6000.x).
+        type: string
+        default: webgl2
+      runner:
+        description: Runner label for the build job (ubuntu-latest, a Ubicloud label, or a self-hosted Unity builder).
+        type: string
+        default: ubuntu-latest
+      signing:
+        description: "github: GitHub artifact attestation (public repos, or Enterprise Cloud). cosign: Sigstore keyless (any plan; writes the repo name to a public log)."
+        type: string
+        default: github
+    secrets:
+      UNITY_LICENSE:
+        required: false
+      UNITY_EMAIL:
+        required: false
+      UNITY_PASSWORD:
+        required: false
+      UNITY_SERIAL:
+        required: false
+    outputs:
+      predicate-sha256:
+        description: sha256 of the signed build predicate.
+        value: ${{ jobs.build.outputs.predicate-sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write       # attestation and keyless signing
+      attestations: write   # GitHub artifact attestations
+    outputs:
+      predicate-sha256: ${{ steps.predicate.outputs.sha256 }}
+    env:
+      PROJECT: ${{ inputs.project-path }}
+      PLUGIN_VERSION: ${{ inputs.plugin-version }}
+    steps:
+      - name: Check inputs
+        run: |
+          case "${{ inputs.graphics }}" in webgl2|webgpu) ;; *) echo "::error::graphics must be webgl2 or webgpu"; exit 1;; esac
+          case "${{ inputs.signing }}" in github|cosign) ;; *) echo "::error::signing must be github or cosign"; exit 1;; esac
+          case "$PLUGIN_VERSION" in *[!0-9.]*|"") echo "::error::plugin-version must look like 1.2.0"; exit 1;; esac
+
+      # The Unity image and Library need more disk than a hosted runner has free. Hosted only:
+      # on a self-hosted machine this would delete real files.
+      - name: Free disk space
+        if: inputs.runner == 'ubuntu-latest'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Check out game
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: game
+          lfs: true
+          persist-credentials: false
+
+      # Our own scripts at the exact commit the caller pinned, not at a movable branch.
+      - name: Check out luxodd/game-build at the pinned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: game-build
+          persist-credentials: false
+
+      - name: Fetch the pinned official plugin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          manifest="game-build/plugin-manifests/unity/$PLUGIN_VERSION.json"
+          test -f "$manifest" || { echo "::error::no published hash list for plugin $PLUGIN_VERSION"; exit 1; }
+          gh release download "v$PLUGIN_VERSION" --repo luxodd/unity-plugin \
+            --pattern '*.unitypackage' --output plugin.unitypackage
+          echo "MANIFEST=$manifest" >> "$GITHUB_ENV"
+
+      - name: Install the plugin over the project's copy
+        run: python3 -I game-build/tools/install_plugin.py "game/$PROJECT" plugin.unitypackage "$MANIFEST"
+
+      - name: Verify plugin files against the hash list
+        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-before.json
+
+      - name: Scan for build hooks that reference the plugin
+        run: python3 -I game-build/tools/scan_build_hooks.py "game/$PROJECT" --report hooks.json
+
+      - name: Add the Luxodd build script
+        run: |
+          mkdir -p "game/$PROJECT/Assets/LuxoddBuild/Editor"
+          cp game-build/unity-build/Editor/LuxoddWebGLBuild.cs "game/$PROJECT/Assets/LuxoddBuild/Editor/"
+
+      - name: Cache Library
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: game/${{ inputs.project-path }}/Library
+          key: Library-WebGL-${{ inputs.graphics }}-${{ hashFiles(format('game/{0}/Packages/manifest.json', inputs.project-path), format('game/{0}/Packages/packages-lock.json', inputs.project-path), format('game/{0}/ProjectSettings/ProjectVersion.txt', inputs.project-path)) }}
+          restore-keys: |
+            Library-WebGL-${{ inputs.graphics }}-
+
+      - name: Build
+        uses: game-ci/unity-builder@1d4ee0697f193f54668e98961d79907911f4b4f2 # v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          projectPath: game/${{ inputs.project-path }}
+          unityVersion: auto          # the project's ProjectVersion.txt; never upgraded here
+          targetPlatform: WebGL
+          buildMethod: Luxodd.Build.LuxoddWebGLBuild.Build
+          buildsPath: build
+          versioning: None
+          customParameters: -luxoddGraphics ${{ inputs.graphics }}
+
+      - name: Take ownership of the build output
+        run: sudo chown -R "$USER" build
+
+      - name: Re-verify plugin files after the build
+        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-after.json
+
+      - name: Write the build predicate
+        id: predicate
+        env:
+          LUXODD_GAME_BUILD_SHA: ${{ job.workflow_sha }}
+        run: |
+          out=$(find build -name luxodd-build-settings.json -print -quit | xargs dirname)
+          test -n "$out" || { echo "::error::build output not found"; exit 1; }
+          python3 -I game-build/tools/build_manifest.py "$out" "$MANIFEST" plugin-after.json hooks.json luxodd-build.json
+          echo "sha256=$(sha256sum luxodd-build.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "BUILD_DIR=$out" >> "$GITHUB_ENV"
+
+      - name: Attest (GitHub)
+        if: inputs.signing == 'github'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ env.BUILD_DIR }}/**
+            luxodd-build.json
+
+      - name: Install cosign
+        if: inputs.signing == 'cosign'
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Attest (cosign keyless)
+        if: inputs.signing == 'cosign'
+        run: |
+          cosign sign-blob --yes --bundle luxodd-build.sigstore.json luxodd-build.json
+
+      - name: Upload build and attestation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: luxodd-webgl-build
+          path: |
+            ${{ env.BUILD_DIR }}
+            luxodd-build.json
+            luxodd-build.sigstore.json
+            plugin-before.json
+            plugin-after.json
+            hooks.json
+          if-no-files-found: warn
