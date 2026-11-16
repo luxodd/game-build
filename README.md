@@ -1,4 +1,4 @@
-# luxodd/game-build (local draft)
+# luxodd/game-build
 
 Reusable GitHub Actions workflow that builds a Luxodd game with the official, untampered
 plugin and signs the result, without Luxodd seeing the game's source. Design:
