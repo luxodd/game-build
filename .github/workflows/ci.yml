@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Tests
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest tests -q
+      - name: Hash lists parse and name their own version
+        run: |
+          python3 - <<'PY'
+          import json, pathlib
+          for p in sorted(pathlib.Path("plugin-manifests/unity").glob("*.json")):
+              m = json.loads(p.read_text())
+              assert m["version"] == p.stem, p
+              assert len(m["package_sha256"]) == 64 and m["files"], p
+              print(p, len(m["files"]))
+          PY
