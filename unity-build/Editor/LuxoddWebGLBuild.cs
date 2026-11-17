@@ -21,7 +21,9 @@ namespace Luxodd.Build
 
             PlayerSettings.WebGL.template = "PROJECT:LuxoddTemplate";
             PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Gzip;
-            PlayerSettings.WebGL.decompressionFallback = false;
+            // Luxodd serves build files without a Content-Encoding header (server /proxy and /web/static), so the
+            // loader must decompress them itself; 18 of 21 game projects already have this on.
+            PlayerSettings.WebGL.decompressionFallback = true;
             PlayerSettings.WebGL.threadsSupport = false;
             PlayerSettings.WebGL.dataCaching = true;
             PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.WebGL, false);
