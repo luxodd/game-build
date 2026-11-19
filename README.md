@@ -22,6 +22,8 @@ deploy job should consume this workflow's signed artifact rather than build its 
 | --- | --- |
 | `.github/workflows/unity-webgl.yml` | the reusable workflow (`on: workflow_call`) |
 | `examples/caller-unity.yml` | the one file a game repo adds |
+| `.github/workflows/attest-test.yml` | attest-only reusable workflow: signs a dummy artifact, for proving the signing and verify path without Unity |
+| `examples/caller-attest-test.yml` | its caller, for a public test repo on GitHub-hosted runners |
 | `plugin-manifests/unity/<version>.json` | published hash list per plugin release: package sha256 plus sha256 of every installed file and `.meta` |
 | `tools/make_hash_list.py` | writes a hash list from a release `.unitypackage` |
 | `tools/install_plugin.py` | deletes the project's plugin folders and installs the pinned package, refusing a package whose hash is not the list's |
@@ -43,7 +45,9 @@ deploy job should consume this workflow's signed artifact rather than build its 
 4. Scans for build hooks. **fail:** a build callback in a file that names the plugin.
    **review:** any other callback, `[DidReloadScripts]`, or editor code that names the plugin
    and writes files.
-5. Builds with GameCI: `LuxoddTemplate`, Gzip, threads off, non-development, one graphics
+5. Builds with GameCI (`unity: gameci`, Docker) or with the runner's own installed editor
+   (`unity: local`, the exact `ProjectVersion.txt` version, never a substitute). Both run
+   the same build method: `LuxoddTemplate`, Gzip, threads off, non-development, one graphics
    target (`webgl2` or `webgpu`), the project's own Unity version.
 6. Re-verifies the plugin, hashes every build file, signs: GitHub artifact attestation, or
    cosign keyless for private repos without Enterprise Cloud.
@@ -98,8 +102,8 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 - **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud,
   and global-ci notes the org is not even on Team. So `signing: cosign` is the default path for
   private game repos until that changes.
-- **Docker.** GameCI's builder needs Docker, so the workflow cannot yet build on a macOS
-  self-hosted runner. A local-Unity build path is not written yet.
+- **Local Unity path untested.** `unity: local` (no Docker) is written but has not run; the
+  runner's editor must be licensed and match `ProjectVersion.txt` exactly.
 - **The repo is private.** Callers in other repos can use a reusable workflow from a private
   repo only with the org's Actions access setting; the design assumes a public repo.
 - **Admin check.** Not built. Design: `~/projects/docs/design/attestation-upload-check.md`.

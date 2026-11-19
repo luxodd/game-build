@@ -32,7 +32,11 @@ def main():
         "source": {"repository": env("GITHUB_REPOSITORY"), "commit": env("GITHUB_SHA"),
                    "ref": env("GITHUB_REF")},
         "workflow": {"run_id": env("GITHUB_RUN_ID"), "run_attempt": env("GITHUB_RUN_ATTEMPT"),
-                     "game_build_sha": env("LUXODD_GAME_BUILD_SHA")},
+                     "game_build_sha": env("LUXODD_GAME_BUILD_SHA"),
+                     # gameci (Docker) or local (the runner's own Unity editor), and the runner
+                     # kind, so a verifier can require a hosted build if it wants to.
+                     "builder": env("LUXODD_BUILDER"),
+                     "runner_environment": env("RUNNER_ENVIRONMENT")},
         "plugin": {"name": pm["plugin"], "version": pm["version"],
                    "package_sha256": pm["package_sha256"],
                    "hash_list_sha256": sha256(plugin_manifest),

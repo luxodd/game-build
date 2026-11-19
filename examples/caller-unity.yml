@@ -20,6 +20,9 @@ jobs:
       graphics: webgl2       # or webgpu (Unity 6000.x only)
       signing: cosign        # github only for public repos (Enterprise Cloud for private)
       runner: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+      # Self-hosted Unity builder without Docker (private repos only: never let fork PRs reach it):
+      #   runner: luxodd-unity
+      #   unity: local       # the runner's own editor and licence; no UNITY_* secrets needed
     secrets:
       UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
       UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
