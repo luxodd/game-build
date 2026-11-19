@@ -20,7 +20,7 @@ namespace Luxodd.Build
             var graphics = (Arg("-luxoddGraphics") ?? "webgl2").ToLowerInvariant();
 
             PlayerSettings.WebGL.template = "PROJECT:LuxoddTemplate";
-            PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Gzip;
+            PlayerSettings.WebGL.compressionFormat = (Arg("-luxoddCompression") ?? "gzip").ToLowerInvariant() == "brotli" ? WebGLCompressionFormat.Brotli : WebGLCompressionFormat.Gzip;
             // Luxodd serves build files without a Content-Encoding header (server /proxy and /web/static), so the
             // loader must decompress them itself; 18 of 21 game projects already have this on.
             PlayerSettings.WebGL.decompressionFallback = true;
