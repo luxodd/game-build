@@ -122,10 +122,19 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 - **Install overwrites `Resources/NetworkSettingsDescriptor.asset`.** It is a plugin file, so
   the game's own settings in it are replaced by the release's. Games must not depend on
   editing it (the committed API keys belong elsewhere anyway).
-- **API updater.** On Unity 6, Unity rewrites `velocity` to `linearVelocity` in a plugin
-  example script when it updates APIs. If GameCI's import applies that, the post-build
-  re-verify fails for every Unity 6 game. Fix in the plugin (version-guarded code), not by
-  loosening the check. Not yet observed in a real run.
+- **Unity rewrites two plugin `.meta` files on import (observed, blocks signing).** On the
+  first real run (Tower Rush, Unity 6000.6.9f1, run 44681462751), the build succeeded but the
+  post-build re-verify failed: 600 of 602 files verified, and Unity's texture importer had
+  re-serialized `Example/Sprites/white_circle_256_8_gradient.png.meta` and
+  `white_round_rect_16.png.meta`. It filled in `internalIDToNameTable` and added
+  `spriteTessellationMethod` and `spriteGeometrySubdivision`. That is import metadata, not code,
+  and it explains the same two "edited" files in Split Time's copy. Options: the plugin ships
+  those metas already upgraded (but games run 11 editor versions), or the re-verify accepts
+  re-serialized metas of non-code assets when the guid and importer type are unchanged and
+  records the diff in the predicate, while staying byte-exact for code, code-asset metas
+  (`.cs`, `.dll`, `.jslib`, `.asmdef`) and the template. Decision pending.
+- **API updater.** On Unity 6, Unity may rewrite `velocity` to `linearVelocity` in a plugin
+  example script. Not seen in the Tower Rush run.
 - **Game code that calls changed plugin internals** will not compile against the pinned plugin.
   Expected for games with edited plugin files; that is the migration, not a workflow bug.
 - **Older plugin versions** install extra folders (`Assets/Fonts`, `Assets/TextMesh Pro`) that
@@ -135,8 +144,9 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 - **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud;
   the org is on Team. So `signing: cosign` is the path for private game repos. It writes the
   repo name, not its code, to Sigstore's public log; Max approved that 2026-11-20.
-- **Local Unity path untested.** `unity: local` (no Docker) is written but has not run; the
-  runner's editor must be licensed and match `ProjectVersion.txt` exactly.
+- **Local Unity path ran once** (Tower Rush, self-hosted Mac, 2026-11-20). Checkout took 4 min 16 s
+  (3 GB LFS), install, verify and hook scan took 5 s, and the Unity build took 28 min 26 s (cold
+  Library). It stopped at the re-verify above, so nothing was signed.
 - **The repo is private.** Callers in other repos can use a reusable workflow from a private
   repo only with the org's Actions access setting; the design assumes a public repo.
 - **Admin check.** Not built. Design: `~/projects/docs/design/attestation-upload-check.md`.
