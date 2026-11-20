@@ -34,12 +34,28 @@ deploy job should consume this workflow's signed artifact rather than build its 
 | `unity-build/Editor/LuxoddWebGLBuild.cs` | the build method; fixed settings, one graphics target |
 | `tests/` | `python -m pytest tests -q` (synthetic package; no Unity, no network) |
 
+## Plugin versions
+
+- **Release.** Each published release of `luxodd/unity-plugin` gets a hash list
+  `plugin-manifests/unity/<version>.json`: the package's sha256 plus every file it installs.
+- **Preview.** A preview has no package. Its list (`"channel": "preview"`) names the plugin's
+  source repo and one full commit SHA, with every file under the same roots at that commit. The
+  workflow fetches that commit (`LUXODD_PLUGIN_PREVIEW_TOKEN`, since the repo is private), and
+  install checks every file before writing. A list without a full SHA is refused.
+  `1.3.0-preview.1` is pinned to `luxodd/unity-plugin-development@89042e9a` (2026-11-18), the
+  commit the 1.3 integration branches carry. `main` has five later fix PRs under the same
+  version string (9 plugin files differ), so the next preview needs its own version number.
+- **The signed predicate records which.** `plugin.channel` is `release` or `preview`, and
+  `plugin.source` has the commit for a preview, so admin can show preview builds differently.
+- **Lists are never changed or removed.** A game built on an old list must keep verifying.
+  A new release or preview gets a new file.
+
 ## What a run does
 
 1. Checks out its own scripts at `job.workflow_sha`, so a caller pinned to a SHA gets exactly
    those scripts.
 2. Downloads `luxodd/unity-plugin` release `v<version>` and refuses it unless its sha256 is
-   the hash list's.
+   the hash list's (for a preview: the source repo at the list's commit).
 3. Deletes `Assets/Luxodd.Game` and `Assets/WebGLTemplates/LuxoddTemplate`, installs the
    package, verifies every file.
 4. Scans for build hooks. **fail:** a build callback that names the plugin and writes to a

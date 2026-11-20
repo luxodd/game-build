@@ -38,7 +38,11 @@ def main():
                      "builder": env("LUXODD_BUILDER"),
                      "runner_environment": env("RUNNER_ENVIRONMENT")},
         "plugin": {"name": pm["plugin"], "version": pm["version"],
-                   "package_sha256": pm["package_sha256"],
+                   # "release": installed from a published package; "preview": from the
+                   # plugin repo at a pinned commit (admin may treat these differently).
+                   "channel": pm.get("channel", "release"),
+                   "source": pm.get("source"),
+                   "package_sha256": pm.get("package_sha256"),
                    "hash_list_sha256": sha256(plugin_manifest),
                    "check": json.load(open(plugin_report))},
         "build_hooks": json.load(open(hook_report)),

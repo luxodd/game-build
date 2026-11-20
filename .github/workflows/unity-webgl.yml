@@ -26,7 +26,7 @@ on:
         type: string
         default: .
       plugin-version:
-        description: Official Unity plugin version; must have a hash list in plugin-manifests/unity/.
+        description: Official Unity plugin version (1.2.0) or preview (1.3.0-preview.1); must have a hash list in plugin-manifests/unity/.
         type: string
         default: 1.2.0
       graphics:
@@ -53,6 +53,9 @@ on:
       UNITY_PASSWORD:
         required: false
       UNITY_SERIAL:
+        required: false
+      LUXODD_PLUGIN_PREVIEW_TOKEN:
+        description: Read access to the plugin's source repo; needed only for a preview plugin-version.
         required: false
     outputs:
       predicate-sha256:
@@ -83,7 +86,7 @@ jobs:
           case "${{ inputs.graphics }}" in webgl2|webgpu) ;; *) echo "::error::graphics must be webgl2 or webgpu"; exit 1;; esac
           case "${{ inputs.signing }}" in github|cosign) ;; *) echo "::error::signing must be github or cosign"; exit 1;; esac
           case "${{ inputs.unity }}" in gameci|local) ;; *) echo "::error::unity must be gameci or local"; exit 1;; esac
-          case "$PLUGIN_VERSION" in *[!0-9.]*|"") echo "::error::plugin-version must look like 1.2.0"; exit 1;; esac
+          echo "$PLUGIN_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$' || { echo "::error::plugin-version must look like 1.2.0 or 1.3.0-preview.1"; exit 1; }
 
       # The Unity image and Library need more disk than a hosted runner has free. Hosted only:
       # on a self-hosted machine this would delete real files.
@@ -109,18 +112,30 @@ jobs:
           path: game-build
           persist-credentials: false
 
+      # A release comes from its published package; a preview from the plugin's source repo at
+      # the exact commit its hash list names. install_plugin.py checks every file either way.
       - name: Fetch the pinned official plugin
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_TOKEN: ${{ secrets.LUXODD_PLUGIN_PREVIEW_TOKEN }}
         run: |
           manifest="game-build/plugin-manifests/unity/$PLUGIN_VERSION.json"
           test -f "$manifest" || { echo "::error::no published hash list for plugin $PLUGIN_VERSION"; exit 1; }
-          gh release download "v$PLUGIN_VERSION" --repo luxodd/unity-plugin \
-            --pattern '*.unitypackage' --output plugin.unitypackage
+          channel=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("channel","release"))' "$manifest")
+          if [ "$channel" = preview ]; then
+            read -r repo commit < <(python3 -I -c 'import json,sys;s=json.load(open(sys.argv[1]))["source"];print(s["repository"],s["commit"])' "$manifest")
+            test -n "$PREVIEW_TOKEN" || { echo "::error::plugin $PLUGIN_VERSION is a preview; LUXODD_PLUGIN_PREVIEW_TOKEN is needed to read $repo"; exit 1; }
+            GH_TOKEN="$PREVIEW_TOKEN" gh api "repos/$repo/tarball/$commit" > plugin.tar.gz
+            echo "PLUGIN_SOURCE=plugin.tar.gz" >> "$GITHUB_ENV"
+          else
+            gh release download "v$PLUGIN_VERSION" --repo luxodd/unity-plugin \
+              --pattern '*.unitypackage' --output plugin.unitypackage
+            echo "PLUGIN_SOURCE=plugin.unitypackage" >> "$GITHUB_ENV"
+          fi
           echo "MANIFEST=$manifest" >> "$GITHUB_ENV"
 
       - name: Install the plugin over the project's copy
-        run: python3 -I game-build/tools/install_plugin.py "game/$PROJECT" plugin.unitypackage "$MANIFEST"
+        run: python3 -I game-build/tools/install_plugin.py "game/$PROJECT" "$PLUGIN_SOURCE" "$MANIFEST"
 
       - name: Verify plugin files against the hash list
         run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-before.json
