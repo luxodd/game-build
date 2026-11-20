@@ -112,6 +112,14 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
 
+      # A self-hosted workspace keeps the last run's files. Remove every output this job writes,
+      # so nothing stale can be installed from, verified against, hashed or signed.
+      - name: Remove outputs of earlier runs
+        run: |
+          rm -rf build plugin-baseline
+          rm -f plugin.unitypackage plugin.tar.gz plugin-before.json plugin-after.json hooks.json \
+                luxodd-build.json luxodd-build.sigstore.json unity-build.log
+
       - name: Check out game
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
