@@ -77,6 +77,21 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 
 ## Measured locally
 
+- **First attested game build**, 2026-11-20: Tower Rush on the self-hosted Mac (private
+  `luxodd/tower-rush-attest-test`, run 44686567656, game-build `41c7784`, Unity 6000.6.9f1,
+  `unity: local`, cosign keyless).
+  - Timings with a warm `_work`: checkout 7 s; plugin fetch, install, verify, baseline and hook
+    scan 6 s; Unity build 27 min 7 s; re-verify, predicate and signing 10 s; upload 1 min 14 s.
+    The first, cold run took 4 min 16 s to check out (3 GB LFS) and 28 min 26 s to build.
+  - Plugin 1.2.0 release: 602/602 before and after, with 2 import rewrites recorded
+    (TextureImporter sprite metas). Hook scan: 0 fail, 5 review, 6 editor DLLs unscanned.
+  - Build: 23 files, 307,790,178 bytes (data 279.3 MB, wasm 14.1 MB). WebGL 2, Gzip,
+    LuxoddTemplate, threads off, non-development.
+  - `python -m sigstore verify github luxodd-build.json --bundle luxodd-build.sigstore.json
+    --cert-identity https://github.com/luxodd/game-build/.github/workflows/unity-webgl.yml@41c7784…
+    --repository luxodd/tower-rush-attest-test`: **OK**. All 23 build files match the signed
+    predicate. One byte changed in the predicate: "Signature is invalid". One byte changed in
+    the wasm: its sha256 no longer matches.
 - Signing proven without Unity, 2026-11-20, from the public `luxodd/game-build-attest-test` on
   GitHub-hosted runners:
   - **GitHub attestation** (run 44675408606): `gh attestation verify --signer-repo
@@ -148,9 +163,9 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 - **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud;
   the org is on Team. So `signing: cosign` is the path for private game repos. It writes the
   repo name, not its code, to Sigstore's public log; Max approved that 2026-11-20.
-- **Local Unity path ran once** (Tower Rush, self-hosted Mac, 2026-11-20). Checkout took 4 min 16 s
-  (3 GB LFS), install, verify and hook scan took 5 s, and the Unity build took 28 min 26 s (cold
-  Library). It stopped at the re-verify above, so nothing was signed.
+- **Self-hosted outputs.** A self-hosted workspace keeps the last run's files. The second run
+  failed on a leftover `plugin.unitypackage`; a leftover `build/` could have been signed with a
+  new build. The job now removes all of its outputs before it starts.
 - **The repo is private.** Callers in other repos can use a reusable workflow from a private
   repo only with the org's Actions access setting; the design assumes a public repo.
 - **Admin check.** Not built. Design: `~/projects/docs/design/attestation-upload-check.md`.
