@@ -77,6 +77,18 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 
 ## Measured locally
 
+- Signing proven without Unity, 2026-11-20, from the public `luxodd/game-build-attest-test` on
+  GitHub-hosted runners:
+  - **GitHub attestation** (run 44675408606): `gh attestation verify --signer-repo
+    luxodd/game-build` passes. Fails (exit 1) on a one-byte-changed file, online and offline
+    with the bundle, and with `--signer-repo luxodd/global-ci`.
+  - **cosign keyless** (run 44677931095): `python -m sigstore verify github luxodd-build.json
+    --bundle luxodd-build.sigstore.json --cert-identity
+    https://github.com/luxodd/game-build/.github/workflows/attest-test.yml@<sha> --repository
+    <caller>` passes (sigstore-python 3.6.7). Fails with "Signature is invalid" when one byte of
+    the predicate changes, and with "Certificate's SANs do not match" for another workflow.
+  - A changed build file is caught by its sha256 in the signed predicate. That is the check
+    admin makes (`docs/design/attestation-upload-check.md`).
 - Hash lists generated for every full-version Unity release, 1.0.3 to 1.2.0 (1.0.5 omitted:
   its package reports itself as 1.0.4).
 - `plugin-manifests/unity/1.2.0.json` re-checked 2026-11-19 against a fresh download of the
@@ -120,9 +132,9 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
   can overwrite the project's own. Only allow 1.2.0 until that is handled.
 - Decide where the hash lists are published (this repo, or release assets of
   `luxodd/unity-plugin` signed by its release workflow).
-- **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud,
-  and global-ci notes the org is not even on Team. So `signing: cosign` is the default path for
-  private game repos until that changes.
+- **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud;
+  the org is on Team. So `signing: cosign` is the path for private game repos. It writes the
+  repo name, not its code, to Sigstore's public log; Max approved that 2026-11-20.
 - **Local Unity path untested.** `unity: local` (no Docker) is written but has not run; the
   runner's editor must be licensed and match `ProjectVersion.txt` exactly.
 - **The repo is private.** Callers in other repos can use a reusable workflow from a private
