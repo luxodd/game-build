@@ -28,7 +28,7 @@ deploy job should consume this workflow's signed artifact rather than build its 
 | `tools/make_hash_list.py` | writes a hash list from a release `.unitypackage` |
 | `tools/install_plugin.py` | deletes the project's plugin folders and installs the pinned package, refusing a package whose hash is not the list's |
 | `tools/verify_plugin.py` | byte-exact check of the project's plugin folders against a hash list |
-| `tools/scan_build_hooks.py` | fails on editor build callbacks that name the plugin; lists other hooks for review |
+| `tools/scan_build_hooks.py` | fails on build callbacks that write to plugin paths, act on assemblies or rewrite IL while naming the plugin; lists other hooks for review |
 | `tools/build_manifest.py` | writes the signed predicate: source, plugin, check results, settings, every build file's hash |
 | `tools/extract_unitypackage.py` | unpacks a `.unitypackage` to real paths (for diffs) |
 | `unity-build/Editor/LuxoddWebGLBuild.cs` | the build method; fixed settings, one graphics target |
@@ -42,7 +42,8 @@ deploy job should consume this workflow's signed artifact rather than build its 
    the hash list's.
 3. Deletes `Assets/Luxodd.Game` and `Assets/WebGLTemplates/LuxoddTemplate`, installs the
    package, verifies every file.
-4. Scans for build hooks. **fail:** a build callback in a file that names the plugin.
+4. Scans for build hooks. **fail:** a build callback that names the plugin and writes to a
+   path derived from it, is an assembly-level hook, or rewrites IL.
    **review:** any other callback, `[DidReloadScripts]`, or editor code that names the plugin
    and writes files.
 5. Builds with GameCI (`unity: gameci`, Docker) or with the runner's own installed editor
@@ -73,8 +74,12 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
   `SpineBuildProcessor` and `EditorSkeletonPlayer`, Zenject `TestBuildAssemblyFilter`,
   post-processing `[DidReloadScripts]` ×2), 6 editor DLLs unscanned (DOTween ×2, Zenject Cecil
   ×4).
-- Hook scan over all 22 games: 2 fail (gravity-switch-game `WebGLReleaseGuard.cs`,
-  parabox-game `ParaboxLuxoddWebGLBuildGuard.cs`), the rest pass with review items.
+- Hook scan over all 22 games, 2026-11-20: 0 fail, 48 review. Before the scanner looked at
+  what a hook writes, it was 2 fail and 46 review. Both fails were read-only guards that name
+  the plugin: gravity-switch-game `WebGLReleaseGuard.cs` skips `Assets/Luxodd.Game` when it
+  checks Resources folders and copies font licences into the build output. parabox-game
+  `ParaboxLuxoddWebGLBuildGuard.cs` checks that `LuxoddTemplate` exists and selects it. Both
+  are now review items.
 
 ## Known gaps before this can be published
 
