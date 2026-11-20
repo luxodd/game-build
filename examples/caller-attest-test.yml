@@ -1,0 +1,21 @@
+# For the public test repo only (luxodd/game-build-attest-test): runs on GitHub-hosted runners,
+# never self-hosted. Pin luxodd/game-build by full commit SHA.
+name: Luxodd attest test
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing:
+        type: choice
+        options: [github, cosign]
+        default: github
+
+jobs:
+  attest:
+    uses: luxodd/game-build/.github/workflows/attest-test.yml@<full-commit-sha>
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      signing: ${{ inputs.signing }}

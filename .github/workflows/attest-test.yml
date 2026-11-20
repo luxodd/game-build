@@ -1,0 +1,75 @@
+# luxodd/game-build — attest-only test workflow (no Unity, no game code).
+# Proves the signing and verification path: a caller on a GitHub-hosted runner gets a dummy
+# artifact signed by THIS reusable workflow, then checks it with
+#   gh attestation verify <file> --repo <caller> --signer-repo luxodd/game-build
+# The predicate uses its own schema, so admin's check (schema game-build/v0) can never accept a
+# test artifact as a game build.
+
+name: Luxodd attest test
+
+on:
+  workflow_call:
+    inputs:
+      signing:
+        description: github (GitHub artifact attestation) or cosign (Sigstore keyless bundle).
+        type: string
+        default: github
+
+permissions:
+  contents: read
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check inputs
+        run: |
+          case "${{ inputs.signing }}" in github|cosign) ;; *) echo "::error::signing must be github or cosign"; exit 1;; esac
+
+      - name: Make a dummy artifact and predicate
+        env:
+          LUXODD_GAME_BUILD_SHA: ${{ job.workflow_sha }}
+        run: |
+          mkdir -p build
+          printf 'luxodd attest test\nrun %s attempt %s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > build/dummy.txt
+          python3 -I - <<'PY'
+          import hashlib, json, os
+          e = os.environ.get
+          files = {"dummy.txt": hashlib.sha256(open("build/dummy.txt", "rb").read()).hexdigest()}
+          json.dump({"schema": "https://luxodd.com/game-build/attest-test/v0",
+                     "source": {"repository": e("GITHUB_REPOSITORY"), "commit": e("GITHUB_SHA")},
+                     "workflow": {"run_id": e("GITHUB_RUN_ID"), "game_build_sha": e("LUXODD_GAME_BUILD_SHA")},
+                     "files": files}, open("luxodd-build.json", "w"), indent=1)
+          PY
+          cat luxodd-build.json
+
+      - name: Attest (GitHub)
+        if: inputs.signing == 'github'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            build/dummy.txt
+            luxodd-build.json
+
+      - name: Install cosign
+        if: inputs.signing == 'cosign'
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Attest (cosign keyless)
+        if: inputs.signing == 'cosign'
+        run: cosign sign-blob --yes --bundle luxodd-build.sigstore.json luxodd-build.json
+
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: luxodd-attest-test
+          path: |
+            build/dummy.txt
+            luxodd-build.json
+            luxodd-build.sigstore.json
+          if-no-files-found: warn

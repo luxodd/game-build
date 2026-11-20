@@ -13,6 +13,8 @@
 # Builds on luxodd/global-ci PR #2 (unity-webgl-deploy.yml): same pinned actions, Library cache,
 # runner input and job.workflow_sha pinning. Unlike that pipeline it never deploys: the signed
 # artifact goes to a game's draft (LUXL-2710), and promotion is a human approval.
+# `unity: local` skips Docker and runs the runner's own editor (a self-hosted builder); the
+# plugin install, verify, hook scan, re-verify and signing steps are the same on both paths.
 
 name: Luxodd Unity web build
 
@@ -24,7 +26,7 @@ on:
         type: string
         default: .
       plugin-version:
-        description: Official Unity plugin version; must have a hash list in plugin-manifests/unity/.
+        description: Official Unity plugin version (1.2.0) or preview (1.3.0-preview.1); must have a hash list in plugin-manifests/unity/.
         type: string
         default: 1.2.0
       graphics:
@@ -35,6 +37,10 @@ on:
         description: Runner label for the build job (ubuntu-latest, a Ubicloud label, or a self-hosted Unity builder).
         type: string
         default: ubuntu-latest
+      unity:
+        description: "gameci: build in GameCI's Unity Docker image (needs Docker and Unity licence secrets). local: run the runner's own installed editor, the exact version in ProjectVersion.txt, with the runner's own licence (self-hosted, no Docker)."
+        type: string
+        default: gameci
       signing:
         description: "github: GitHub artifact attestation (public repos, or Enterprise Cloud). cosign: Sigstore keyless (any plan; writes the repo name to a public log)."
         type: string
@@ -47,6 +53,9 @@ on:
       UNITY_PASSWORD:
         required: false
       UNITY_SERIAL:
+        required: false
+      LUXODD_PLUGIN_PREVIEW_TOKEN:
+        description: Read access to the plugin's source repo; needed only for a preview plugin-version.
         required: false
     outputs:
       predicate-sha256:
@@ -69,12 +78,31 @@ jobs:
     env:
       PROJECT: ${{ inputs.project-path }}
       PLUGIN_VERSION: ${{ inputs.plugin-version }}
+      GRAPHICS: ${{ inputs.graphics }}
+      LUXODD_BUILDER: ${{ inputs.unity }}
     steps:
+      # A self-hosted builder is someone's machine. Refuse to run there unless the job is inside
+      # the runner's own _work folder, for a private repo, and not for a pull request from a fork.
+      - name: Guard a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          ws=$(cd "$GITHUB_WORKSPACE" && pwd -P)
+          case "$ws" in */_work/*) ;; *) echo "::error::workspace $ws is not inside the runner's _work folder"; exit 1;; esac
+          case "$ws" in "$HOME"/projects/*|"$HOME"/projects) echo "::error::workspace is inside ~/projects"; exit 1;; esac
+          test "$REPO_PRIVATE" = true || { echo "::error::self-hosted builds are for private repos only"; exit 1; }
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::refusing a pull request from a fork on a self-hosted runner"; exit 1
+          fi
+
       - name: Check inputs
         run: |
           case "${{ inputs.graphics }}" in webgl2|webgpu) ;; *) echo "::error::graphics must be webgl2 or webgpu"; exit 1;; esac
           case "${{ inputs.signing }}" in github|cosign) ;; *) echo "::error::signing must be github or cosign"; exit 1;; esac
-          case "$PLUGIN_VERSION" in *[!0-9.]*|"") echo "::error::plugin-version must look like 1.2.0"; exit 1;; esac
+          case "${{ inputs.unity }}" in gameci|local) ;; *) echo "::error::unity must be gameci or local"; exit 1;; esac
+          echo "$PLUGIN_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$' || { echo "::error::plugin-version must look like 1.2.0 or 1.3.0-preview.1"; exit 1; }
 
       # The Unity image and Library need more disk than a hosted runner has free. Hosted only:
       # on a self-hosted machine this would delete real files.
@@ -83,6 +111,14 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+
+      # A self-hosted workspace keeps the last run's files. Remove every output this job writes,
+      # so nothing stale can be installed from, verified against, hashed or signed.
+      - name: Remove outputs of earlier runs
+        run: |
+          rm -rf build plugin-baseline
+          rm -f plugin.unitypackage plugin.tar.gz plugin-before.json plugin-after.json hooks.json \
+                luxodd-build.json luxodd-build.sigstore.json unity-build.log
 
       - name: Check out game
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -100,21 +136,48 @@ jobs:
           path: game-build
           persist-credentials: false
 
+      # A release comes from its published package; a preview from the plugin's source repo at
+      # the exact commit its hash list names. install_plugin.py checks every file either way.
       - name: Fetch the pinned official plugin
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_TOKEN: ${{ secrets.LUXODD_PLUGIN_PREVIEW_TOKEN }}
         run: |
           manifest="game-build/plugin-manifests/unity/$PLUGIN_VERSION.json"
           test -f "$manifest" || { echo "::error::no published hash list for plugin $PLUGIN_VERSION"; exit 1; }
-          gh release download "v$PLUGIN_VERSION" --repo luxodd/unity-plugin \
-            --pattern '*.unitypackage' --output plugin.unitypackage
+          channel=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("channel","release"))' "$manifest")
+          if [ "$channel" = preview ]; then
+            read -r repo commit < <(python3 -I -c 'import json,sys;s=json.load(open(sys.argv[1]))["source"];print(s["repository"],s["commit"])' "$manifest")
+            test -n "$PREVIEW_TOKEN" || { echo "::error::plugin $PLUGIN_VERSION is a preview; LUXODD_PLUGIN_PREVIEW_TOKEN is needed to read $repo"; exit 1; }
+            GH_TOKEN="$PREVIEW_TOKEN" gh api "repos/$repo/tarball/$commit" > plugin.tar.gz
+            echo "PLUGIN_SOURCE=plugin.tar.gz" >> "$GITHUB_ENV"
+          else
+            gh release download "v$PLUGIN_VERSION" --repo luxodd/unity-plugin \
+              --pattern '*.unitypackage' --output plugin.unitypackage
+            echo "PLUGIN_SOURCE=plugin.unitypackage" >> "$GITHUB_ENV"
+          fi
           echo "MANIFEST=$manifest" >> "$GITHUB_ENV"
 
       - name: Install the plugin over the project's copy
-        run: python3 -I game-build/tools/install_plugin.py "game/$PROJECT" plugin.unitypackage "$MANIFEST"
+        run: python3 -I game-build/tools/install_plugin.py "game/$PROJECT" "$PLUGIN_SOURCE" "$MANIFEST"
 
       - name: Verify plugin files against the hash list
         run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-before.json
+
+      # The plugin as installed, kept so the post-build check can tell an importer's
+      # re-serialized .meta from any other change.
+      - name: Keep a baseline copy of the installed plugin
+        run: |
+          rm -rf plugin-baseline
+          python3 -I - "game/$PROJECT" "$MANIFEST" plugin-baseline <<'PY'
+          import json, os, shutil, sys
+          project, manifest, out = sys.argv[1:]
+          for rel in json.load(open(manifest))["files"]:
+              src = os.path.join(project, rel)
+              if os.path.isfile(src):
+                  os.makedirs(os.path.dirname(os.path.join(out, rel)), exist_ok=True)
+                  shutil.copy2(src, os.path.join(out, rel))
+          PY
 
       - name: Scan for build hooks that reference the plugin
         run: python3 -I game-build/tools/scan_build_hooks.py "game/$PROJECT" --report hooks.json
@@ -124,7 +187,9 @@ jobs:
           mkdir -p "game/$PROJECT/Assets/LuxoddBuild/Editor"
           cp game-build/unity-build/Editor/LuxoddWebGLBuild.cs "game/$PROJECT/Assets/LuxoddBuild/Editor/"
 
+      # Hosted runners start empty; a self-hosted workspace keeps its Library between runs.
       - name: Cache Library
+        if: inputs.unity == 'gameci'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: game/${{ inputs.project-path }}/Library
@@ -132,7 +197,10 @@ jobs:
           restore-keys: |
             Library-WebGL-${{ inputs.graphics }}-
 
-      - name: Build
+      # Both build paths run the same build method with the same arguments; everything before
+      # and after them (install, verify, hook scan, re-verify, predicate, signing) is shared.
+      - name: Build (GameCI)
+        if: inputs.unity == 'gameci'
         uses: game-ci/unity-builder@4423ee75828dff56037d1d1cfdac6b68e3a6ba00 # v4.8.2
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
@@ -149,10 +217,32 @@ jobs:
           customParameters: -luxoddGraphics ${{ inputs.graphics }}
 
       - name: Take ownership of the build output
+        if: inputs.unity == 'gameci'
         run: sudo chown -R "$USER" build
 
+      - name: Build (local Unity)
+        if: inputs.unity == 'local'
+        run: |
+          ver=$(sed -n 's/^m_EditorVersion: *//p' "game/$PROJECT/ProjectSettings/ProjectVersion.txt" | tr -d '\r')
+          test -n "$ver" || { echo "::error::no m_EditorVersion in ProjectVersion.txt"; exit 1; }
+          case "$RUNNER_OS" in
+            macOS) unity="/Applications/Unity/Hub/Editor/$ver/Unity.app/Contents/MacOS/Unity" ;;
+            Linux) unity="$HOME/Unity/Hub/Editor/$ver/Editor/Unity" ;;
+            *) echo "::error::local Unity builds support macOS and Linux runners"; exit 1 ;;
+          esac
+          test -x "$unity" || { echo "::error::Unity $ver is not installed on this runner ($unity); never substituting another version"; exit 1; }
+          mkdir -p build/WebGL
+          status=0
+          "$unity" -batchmode -nographics -quit \
+            -projectPath "$PWD/game/$PROJECT" -buildTarget WebGL \
+            -executeMethod Luxodd.Build.LuxoddWebGLBuild.Build \
+            -customBuildPath "$PWD/build/WebGL" -luxoddGraphics "$GRAPHICS" \
+            -logFile "$PWD/unity-build.log" || status=$?
+          grep -E '\[LuxoddWebGLBuild\]|error CS[0-9]+' unity-build.log | tail -50 || true
+          exit $status
+
       - name: Re-verify plugin files after the build
-        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-after.json
+        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-after.json --allow-import-rewrites plugin-baseline
 
       - name: Write the build predicate
         id: predicate
@@ -162,7 +252,7 @@ jobs:
           out=$(find build -name luxodd-build-settings.json -print -quit | xargs dirname)
           test -n "$out" || { echo "::error::build output not found"; exit 1; }
           python3 -I game-build/tools/build_manifest.py "$out" "$MANIFEST" plugin-after.json hooks.json luxodd-build.json
-          echo "sha256=$(sha256sum luxodd-build.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(python3 -I -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' luxodd-build.json)" >> "$GITHUB_OUTPUT"
           echo "BUILD_DIR=$out" >> "$GITHUB_ENV"
 
       - name: Attest (GitHub)
@@ -193,4 +283,5 @@ jobs:
             plugin-before.json
             plugin-after.json
             hooks.json
+            unity-build.log
           if-no-files-found: warn

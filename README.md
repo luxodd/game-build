@@ -22,28 +22,49 @@ deploy job should consume this workflow's signed artifact rather than build its 
 | --- | --- |
 | `.github/workflows/unity-webgl.yml` | the reusable workflow (`on: workflow_call`) |
 | `examples/caller-unity.yml` | the one file a game repo adds |
+| `.github/workflows/attest-test.yml` | attest-only reusable workflow: signs a dummy artifact, for proving the signing and verify path without Unity |
+| `examples/caller-attest-test.yml` | its caller, for a public test repo on GitHub-hosted runners |
 | `plugin-manifests/unity/<version>.json` | published hash list per plugin release: package sha256 plus sha256 of every installed file and `.meta` |
 | `tools/make_hash_list.py` | writes a hash list from a release `.unitypackage` |
 | `tools/install_plugin.py` | deletes the project's plugin folders and installs the pinned package, refusing a package whose hash is not the list's |
 | `tools/verify_plugin.py` | byte-exact check of the project's plugin folders against a hash list |
-| `tools/scan_build_hooks.py` | fails on editor build callbacks that name the plugin; lists other hooks for review |
+| `tools/scan_build_hooks.py` | fails on build callbacks that write to plugin paths, act on assemblies or rewrite IL while naming the plugin; lists other hooks for review |
 | `tools/build_manifest.py` | writes the signed predicate: source, plugin, check results, settings, every build file's hash |
 | `tools/extract_unitypackage.py` | unpacks a `.unitypackage` to real paths (for diffs) |
 | `unity-build/Editor/LuxoddWebGLBuild.cs` | the build method; fixed settings, one graphics target |
 | `tests/` | `python -m pytest tests -q` (synthetic package; no Unity, no network) |
+
+## Plugin versions
+
+- **Release.** Each published release of `luxodd/unity-plugin` gets a hash list
+  `plugin-manifests/unity/<version>.json`: the package's sha256 plus every file it installs.
+- **Preview.** A preview has no package. Its list (`"channel": "preview"`) names the plugin's
+  source repo and one full commit SHA, with every file under the same roots at that commit. The
+  workflow fetches that commit (`LUXODD_PLUGIN_PREVIEW_TOKEN`, since the repo is private), and
+  install checks every file before writing. A list without a full SHA is refused.
+  `1.3.0-preview.1` is pinned to `luxodd/unity-plugin-development@89042e9a` (2026-11-18), the
+  commit the 1.3 integration branches carry. `main` has five later fix PRs under the same
+  version string (9 plugin files differ), so the next preview needs its own version number.
+- **The signed predicate records which.** `plugin.channel` is `release` or `preview`, and
+  `plugin.source` has the commit for a preview, so admin can show preview builds differently.
+- **Lists are never changed or removed.** A game built on an old list must keep verifying.
+  A new release or preview gets a new file.
 
 ## What a run does
 
 1. Checks out its own scripts at `job.workflow_sha`, so a caller pinned to a SHA gets exactly
    those scripts.
 2. Downloads `luxodd/unity-plugin` release `v<version>` and refuses it unless its sha256 is
-   the hash list's.
+   the hash list's (for a preview: the source repo at the list's commit).
 3. Deletes `Assets/Luxodd.Game` and `Assets/WebGLTemplates/LuxoddTemplate`, installs the
    package, verifies every file.
-4. Scans for build hooks. **fail:** a build callback in a file that names the plugin.
+4. Scans for build hooks. **fail:** a build callback that names the plugin and writes to a
+   path derived from it, is an assembly-level hook, or rewrites IL.
    **review:** any other callback, `[DidReloadScripts]`, or editor code that names the plugin
    and writes files.
-5. Builds with GameCI: `LuxoddTemplate`, Gzip, threads off, non-development, one graphics
+5. Builds with GameCI (`unity: gameci`, Docker) or with the runner's own installed editor
+   (`unity: local`, the exact `ProjectVersion.txt` version, never a substitute). Both run
+   the same build method: `LuxoddTemplate`, Gzip, threads off, non-development, one graphics
    target (`webgl2` or `webgpu`), the project's own Unity version.
 6. Re-verifies the plugin, hashes every build file, signs: GitHub artifact attestation, or
    cosign keyless for private repos without Enterprise Cloud.
@@ -56,6 +77,33 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 
 ## Measured locally
 
+- **First attested game build**, 2026-11-20: Tower Rush on the self-hosted Mac (private
+  `luxodd/tower-rush-attest-test`, run 44686567656, game-build `41c7784`, Unity 6000.6.9f1,
+  `unity: local`, cosign keyless).
+  - Timings with a warm `_work`: checkout 7 s; plugin fetch, install, verify, baseline and hook
+    scan 6 s; Unity build 27 min 7 s; re-verify, predicate and signing 10 s; upload 1 min 14 s.
+    The first, cold run took 4 min 16 s to check out (3 GB LFS) and 28 min 26 s to build.
+  - Plugin 1.2.0 release: 602/602 before and after, with 2 import rewrites recorded
+    (TextureImporter sprite metas). Hook scan: 0 fail, 5 review, 6 editor DLLs unscanned.
+  - Build: 23 files, 307,790,178 bytes (data 279.3 MB, wasm 14.1 MB). WebGL 2, Gzip,
+    LuxoddTemplate, threads off, non-development.
+  - `python -m sigstore verify github luxodd-build.json --bundle luxodd-build.sigstore.json
+    --cert-identity https://github.com/luxodd/game-build/.github/workflows/unity-webgl.yml@41c7784…
+    --repository luxodd/tower-rush-attest-test`: **OK**. All 23 build files match the signed
+    predicate. One byte changed in the predicate: "Signature is invalid". One byte changed in
+    the wasm: its sha256 no longer matches.
+- Signing proven without Unity, 2026-11-20, from the public `luxodd/game-build-attest-test` on
+  GitHub-hosted runners:
+  - **GitHub attestation** (run 44675408606): `gh attestation verify --signer-repo
+    luxodd/game-build` passes. Fails (exit 1) on a one-byte-changed file, online and offline
+    with the bundle, and with `--signer-repo luxodd/global-ci`.
+  - **cosign keyless** (run 44677931095): `python -m sigstore verify github luxodd-build.json
+    --bundle luxodd-build.sigstore.json --cert-identity
+    https://github.com/luxodd/game-build/.github/workflows/attest-test.yml@<sha> --repository
+    <caller>` passes (sigstore-python 3.6.7). Fails with "Signature is invalid" when one byte of
+    the predicate changes, and with "Certificate's SANs do not match" for another workflow.
+  - A changed build file is caught by its sha256 in the signed predicate. That is the check
+    admin makes (`docs/design/attestation-upload-check.md`).
 - Hash lists generated for every full-version Unity release, 1.0.3 to 1.2.0 (1.0.5 omitted:
   its package reports itself as 1.0.4).
 - `plugin-manifests/unity/1.2.0.json` re-checked 2026-11-19 against a fresh download of the
@@ -69,8 +117,12 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
   `SpineBuildProcessor` and `EditorSkeletonPlayer`, Zenject `TestBuildAssemblyFilter`,
   post-processing `[DidReloadScripts]` ×2), 6 editor DLLs unscanned (DOTween ×2, Zenject Cecil
   ×4).
-- Hook scan over all 22 games: 2 fail (gravity-switch-game `WebGLReleaseGuard.cs`,
-  parabox-game `ParaboxLuxoddWebGLBuildGuard.cs`), the rest pass with review items.
+- Hook scan over all 22 games, 2026-11-20: 0 fail, 48 review. Before the scanner looked at
+  what a hook writes, it was 2 fail and 46 review. Both fails were read-only guards that name
+  the plugin: gravity-switch-game `WebGLReleaseGuard.cs` skips `Assets/Luxodd.Game` when it
+  checks Resources folders and copies font licences into the build output. parabox-game
+  `ParaboxLuxoddWebGLBuildGuard.cs` checks that `LuxoddTemplate` exists and selects it. Both
+  are now review items.
 
 ## Known gaps before this can be published
 
@@ -85,21 +137,35 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
 - **Install overwrites `Resources/NetworkSettingsDescriptor.asset`.** It is a plugin file, so
   the game's own settings in it are replaced by the release's. Games must not depend on
   editing it (the committed API keys belong elsewhere anyway).
-- **API updater.** On Unity 6, Unity rewrites `velocity` to `linearVelocity` in a plugin
-  example script when it updates APIs. If GameCI's import applies that, the post-build
-  re-verify fails for every Unity 6 game. Fix in the plugin (version-guarded code), not by
-  loosening the check. Not yet observed in a real run.
+- **Unity rewrites two plugin `.meta` files on import (observed, blocks signing).** On the
+  first real run (Tower Rush, Unity 6000.6.9f1, run 44681462751), the build succeeded but the
+  post-build re-verify failed: 600 of 602 files verified, and Unity's texture importer had
+  re-serialized `Example/Sprites/white_circle_256_8_gradient.png.meta` and
+  `white_round_rect_16.png.meta`. It filled in `internalIDToNameTable` and the sprite rect,
+  added `spriteTessellationMethod` and `spriteGeometrySubdivision`, bumped the per-platform
+  `serializedVersion` from 3 to 4, and renamed `iPhone` to `iOS`. That is import metadata, not code,
+  and it explains the same two "edited" files in Split Time's copy. **Handled (2026-11-20):** the
+  workflow keeps a baseline copy of the installed plugin. The post-build re-verify (`verify_plugin.py
+  --allow-import-rewrites <baseline>`) accepts a changed `.meta` only for a non-code asset outside
+  the template, with an importer on the allowlist (`TextureImporter`, `AudioImporter`) and the
+  same guid and importer type. The baseline file must itself match the hash list. Each accepted
+  file goes into the predicate under `plugin.importRewrites` with its old and new sha256 and a
+  diff summary. Everything else stays byte-exact: code, code-asset and `Plugins/` metas,
+  `PluginImporter` metas, the template, and every non-meta file.
+- **API updater.** On Unity 6, Unity may rewrite `velocity` to `linearVelocity` in a plugin
+  example script. Not seen in the Tower Rush run.
 - **Game code that calls changed plugin internals** will not compile against the pinned plugin.
   Expected for games with edited plugin files; that is the migration, not a workflow bug.
 - **Older plugin versions** install extra folders (`Assets/Fonts`, `Assets/TextMesh Pro`) that
   can overwrite the project's own. Only allow 1.2.0 until that is handled.
 - Decide where the hash lists are published (this repo, or release assets of
   `luxodd/unity-plugin` signed by its release workflow).
-- **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud,
-  and global-ci notes the org is not even on Team. So `signing: cosign` is the default path for
-  private game repos until that changes.
-- **Docker.** GameCI's builder needs Docker, so the workflow cannot yet build on a macOS
-  self-hosted runner. A local-Unity build path is not written yet.
+- **Private repos need cosign.** GitHub attestations on private repos need Enterprise Cloud;
+  the org is on Team. So `signing: cosign` is the path for private game repos. It writes the
+  repo name, not its code, to Sigstore's public log; Max approved that 2026-11-20.
+- **Self-hosted outputs.** A self-hosted workspace keeps the last run's files. The second run
+  failed on a leftover `plugin.unitypackage`; a leftover `build/` could have been signed with a
+  new build. The job now removes all of its outputs before it starts.
 - **The repo is private.** Callers in other repos can use a reusable workflow from a private
   repo only with the org's Actions access setting; the design assumes a public repo.
 - **Admin check.** Not built. Design: `~/projects/docs/design/attestation-upload-check.md`.

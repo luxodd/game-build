@@ -32,11 +32,22 @@ def main():
         "source": {"repository": env("GITHUB_REPOSITORY"), "commit": env("GITHUB_SHA"),
                    "ref": env("GITHUB_REF")},
         "workflow": {"run_id": env("GITHUB_RUN_ID"), "run_attempt": env("GITHUB_RUN_ATTEMPT"),
-                     "game_build_sha": env("LUXODD_GAME_BUILD_SHA")},
+                     "game_build_sha": env("LUXODD_GAME_BUILD_SHA"),
+                     # gameci (Docker) or local (the runner's own Unity editor), and the runner
+                     # kind, so a verifier can require a hosted build if it wants to.
+                     "builder": env("LUXODD_BUILDER"),
+                     "runner_environment": env("RUNNER_ENVIRONMENT")},
         "plugin": {"name": pm["plugin"], "version": pm["version"],
-                   "package_sha256": pm["package_sha256"],
+                   # "release": installed from a published package; "preview": from the
+                   # plugin repo at a pinned commit (admin may treat these differently).
+                   "channel": pm.get("channel", "release"),
+                   "source": pm.get("source"),
+                   "package_sha256": pm.get("package_sha256"),
                    "hash_list_sha256": sha256(plugin_manifest),
-                   "check": json.load(open(plugin_report))},
+                   "check": json.load(open(plugin_report)),
+                   # .meta files Unity's importer re-serialized during the build, accepted by
+                   # verify_plugin.py --allow-import-rewrites (path, old/new sha256, summary).
+                   "importRewrites": json.load(open(plugin_report)).get("import_rewrites", [])},
         "build_hooks": json.load(open(hook_report)),
         "settings": json.load(open(settings_path)) if os.path.exists(settings_path) else None,
         "files": dict(sorted(files.items())),

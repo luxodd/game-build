@@ -27,6 +27,9 @@ jobs:
           for p in sorted(pathlib.Path("plugin-manifests/unity").glob("*.json")):
               m = json.loads(p.read_text())
               assert m["version"] == p.stem, p
-              assert len(m["package_sha256"]) == 64 and m["files"], p
+              if m.get("channel") == "preview":
+                  assert len(m["source"]["commit"]) == 40 and "package_sha256" not in m and m["files"], p
+              else:
+                  assert len(m["package_sha256"]) == 64 and m["files"], p
               print(p, len(m["files"]))
           PY
