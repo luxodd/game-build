@@ -81,6 +81,22 @@ jobs:
       GRAPHICS: ${{ inputs.graphics }}
       LUXODD_BUILDER: ${{ inputs.unity }}
     steps:
+      # A self-hosted builder is someone's machine. Refuse to run there unless the job is inside
+      # the runner's own _work folder, for a private repo, and not for a pull request from a fork.
+      - name: Guard a self-hosted runner
+        if: runner.environment == 'self-hosted'
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          ws=$(cd "$GITHUB_WORKSPACE" && pwd -P)
+          case "$ws" in */_work/*) ;; *) echo "::error::workspace $ws is not inside the runner's _work folder"; exit 1;; esac
+          case "$ws" in "$HOME"/projects/*|"$HOME"/projects) echo "::error::workspace is inside ~/projects"; exit 1;; esac
+          test "$REPO_PRIVATE" = true || { echo "::error::self-hosted builds are for private repos only"; exit 1; }
+          if [ -n "$HEAD_REPO" ] && [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::refusing a pull request from a fork on a self-hosted runner"; exit 1
+          fi
+
       - name: Check inputs
         run: |
           case "${{ inputs.graphics }}" in webgl2|webgpu) ;; *) echo "::error::graphics must be webgl2 or webgpu"; exit 1;; esac
