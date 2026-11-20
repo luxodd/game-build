@@ -3,7 +3,7 @@
 Run: python -m pytest pipeline/game-build/tests -q
 Uses a tiny synthetic .unitypackage, so it needs no Unity and no network.
 """
-import hashlib, io, json, os, subprocess, sys, tarfile
+import hashlib, io, json, os, re, subprocess, sys, tarfile
 import pytest
 
 TOOLS = os.path.join(os.path.dirname(__file__), "..", "tools")
@@ -223,3 +223,96 @@ def test_preview_list_without_a_commit_sha_is_rejected(tmp_path, project, previe
     r = run("make_hash_list.py", "--preview", tmp_path, "main", "luxodd/x", "UnityPluginDevelopment",
             "1.3.0-preview.1", tmp_path / "x.json")
     assert r.returncode != 0 and "40-character commit SHA" in r.stderr
+
+# ---- post-build re-verify: importer re-serialized .meta files
+
+FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "import-rewrite")
+SPRITES = ["white_circle_256_8_gradient.png.meta", "white_round_rect_16.png.meta"]
+PLUGIN_META = (b"fileFormatVersion: 2\nguid: 0123456789abcdef0123456789abcdef\nPluginImporter:\n"
+               b"  isPreloaded: 0\n  platformData:\n  - first:\n      WebGL: WebGL\n    second:\n      enabled: 1\n")
+MONO_META = b"fileFormatVersion: 2\nguid: 11112222333344445555666677778888\nMonoImporter:\n  serializedVersion: 2\n"
+
+@pytest.fixture
+def rebuilt(tmp_path):
+    """A project as installed (plus a baseline copy and its hash list), ready to be edited."""
+    proj, base = tmp_path / "game", tmp_path / "plugin-baseline"
+    files = {f"Assets/Luxodd.Game/Example/Sprites/{n}": open(os.path.join(FIXTURES, n + ".release"), "rb").read()
+             for n in SPRITES}
+    files["Assets/Luxodd.Game/Plugins/WebGL/websocket.jslib.meta"] = PLUGIN_META
+    files["Assets/Luxodd.Game/Runtime/Core/PluginVersion.cs.meta"] = MONO_META
+    files["Assets/Luxodd.Game/Runtime/Core/PluginVersion.cs"] = b'public const string Version = "1.2.0";\n'
+    for root in (proj, base):
+        for rel, data in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True); (root / rel).write_bytes(data)
+    manifest = tmp_path / "list.json"
+    manifest.write_text(json.dumps({"plugin": "luxodd/unity-plugin", "version": "1.2.0", "package_sha256": "0" * 64,
+                                    "roots": ["Assets/Luxodd.Game"],
+                                    "files": {r: hashlib.sha256(d).hexdigest() for r, d in files.items()}}))
+    return proj, base, manifest
+
+def reverify(proj, base, manifest, report):
+    return run("verify_plugin.py", proj, manifest, "--report", report, "--allow-import-rewrites", base)
+
+def rewrite_sprites(proj):
+    for n in SPRITES:
+        (proj / "Assets/Luxodd.Game/Example/Sprites" / n).write_bytes(open(os.path.join(FIXTURES, n + ".unity6000.6"), "rb").read())
+
+def test_real_unity_sprite_meta_rewrites_pass_and_are_recorded(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    rewrite_sprites(proj)
+    assert run("verify_plugin.py", proj, manifest).returncode == 1  # still byte-exact without the flag
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 0, r.stdout
+    rep = json.loads((tmp_path / "after.json").read_text())
+    assert sorted(x["path"].rsplit("/", 1)[1] for x in rep["import_rewrites"]) == SPRITES
+    x = rep["import_rewrites"][0]
+    assert x["importer"] == "TextureImporter" and x["old_sha256"] != x["new_sha256"]
+    assert "internalIDToNameTable" in x["keys"] and "spriteTessellationMethod" in x["keys"]
+
+def test_rewrite_with_a_changed_guid_fails(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    rewrite_sprites(proj)
+    p = proj / "Assets/Luxodd.Game/Example/Sprites" / SPRITES[0]
+    p.write_bytes(re.sub(rb"guid: [0-9a-f]+", b"guid: ffffffffffffffffffffffffffffffff", p.read_bytes()))
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 1 and "guid changed" in r.stdout
+
+def test_rewrite_with_a_changed_importer_type_fails(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    p = proj / "Assets/Luxodd.Game/Example/Sprites" / SPRITES[1]
+    p.write_bytes(p.read_bytes().replace(b"TextureImporter:", b"DefaultImporter:"))
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 1 and "importer changed" in r.stdout
+
+def test_plugin_importer_meta_change_fails(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    p = proj / "Assets/Luxodd.Game/Plugins/WebGL/websocket.jslib.meta"
+    p.write_bytes(PLUGIN_META.replace(b"enabled: 1", b"enabled: 0"))
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 1 and "code or plugin asset" in r.stdout
+
+def test_code_asset_meta_and_code_changes_fail(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    (proj / "Assets/Luxodd.Game/Runtime/Core/PluginVersion.cs.meta").write_bytes(MONO_META + b"  executionOrder: -100\n")
+    (proj / "Assets/Luxodd.Game/Runtime/Core/PluginVersion.cs").write_bytes(b"// patched\n")
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 1 and "2 changed" in r.stdout and "not a .meta file" in r.stdout
+
+def test_a_baseline_that_differs_from_the_list_is_not_trusted(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    rewrite_sprites(proj)
+    for n in SPRITES:  # an attacker "pre-rewrites" the baseline to match the tampered files
+        (base / "Assets/Luxodd.Game/Example/Sprites" / n).write_bytes((proj / "Assets/Luxodd.Game/Example/Sprites" / n).read_bytes())
+    r = reverify(proj, base, manifest, tmp_path / "after.json")
+    assert r.returncode == 1 and "baseline copy does not match" in r.stdout
+
+def test_predicate_records_import_rewrites(tmp_path, rebuilt):
+    proj, base, manifest = rebuilt
+    rewrite_sprites(proj)
+    reverify(proj, base, manifest, tmp_path / "after.json")
+    out = tmp_path / "build"; out.mkdir(); (out / "index.html").write_text("<html></html>")
+    hooks = tmp_path / "hooks.json"; hooks.write_text(json.dumps({"findings": [], "ok": True}))
+    r = run("build_manifest.py", out, manifest, tmp_path / "after.json", hooks, tmp_path / "pred.json")
+    assert r.returncode == 0, r.stderr
+    pred = json.loads((tmp_path / "pred.json").read_text())
+    assert len(pred["plugin"]["importRewrites"]) == 2 and pred["plugin"]["channel"] == "release"

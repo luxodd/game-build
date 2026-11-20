@@ -126,13 +126,17 @@ gh attestation verify <file> --repo <owner>/<game> --signer-repo luxodd/game-bui
   first real run (Tower Rush, Unity 6000.6.9f1, run 44681462751), the build succeeded but the
   post-build re-verify failed: 600 of 602 files verified, and Unity's texture importer had
   re-serialized `Example/Sprites/white_circle_256_8_gradient.png.meta` and
-  `white_round_rect_16.png.meta`. It filled in `internalIDToNameTable` and added
-  `spriteTessellationMethod` and `spriteGeometrySubdivision`. That is import metadata, not code,
-  and it explains the same two "edited" files in Split Time's copy. Options: the plugin ships
-  those metas already upgraded (but games run 11 editor versions), or the re-verify accepts
-  re-serialized metas of non-code assets when the guid and importer type are unchanged and
-  records the diff in the predicate, while staying byte-exact for code, code-asset metas
-  (`.cs`, `.dll`, `.jslib`, `.asmdef`) and the template. Decision pending.
+  `white_round_rect_16.png.meta`. It filled in `internalIDToNameTable` and the sprite rect,
+  added `spriteTessellationMethod` and `spriteGeometrySubdivision`, bumped the per-platform
+  `serializedVersion` from 3 to 4, and renamed `iPhone` to `iOS`. That is import metadata, not code,
+  and it explains the same two "edited" files in Split Time's copy. **Handled (2026-11-20):** the
+  workflow keeps a baseline copy of the installed plugin. The post-build re-verify (`verify_plugin.py
+  --allow-import-rewrites <baseline>`) accepts a changed `.meta` only for a non-code asset outside
+  the template, with an importer on the allowlist (`TextureImporter`, `AudioImporter`) and the
+  same guid and importer type. The baseline file must itself match the hash list. Each accepted
+  file goes into the predicate under `plugin.importRewrites` with its old and new sha256 and a
+  diff summary. Everything else stays byte-exact: code, code-asset and `Plugins/` metas,
+  `PluginImporter` metas, the template, and every non-meta file.
 - **API updater.** On Unity 6, Unity may rewrite `velocity` to `linearVelocity` in a plugin
   example script. Not seen in the Tower Rush run.
 - **Game code that calls changed plugin internals** will not compile against the pinned plugin.

@@ -44,7 +44,10 @@ def main():
                    "source": pm.get("source"),
                    "package_sha256": pm.get("package_sha256"),
                    "hash_list_sha256": sha256(plugin_manifest),
-                   "check": json.load(open(plugin_report))},
+                   "check": json.load(open(plugin_report)),
+                   # .meta files Unity's importer re-serialized during the build, accepted by
+                   # verify_plugin.py --allow-import-rewrites (path, old/new sha256, summary).
+                   "importRewrites": json.load(open(plugin_report)).get("import_rewrites", [])},
         "build_hooks": json.load(open(hook_report)),
         "settings": json.load(open(settings_path)) if os.path.exists(settings_path) else None,
         "files": dict(sorted(files.items())),

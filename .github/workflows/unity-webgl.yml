@@ -156,6 +156,21 @@ jobs:
       - name: Verify plugin files against the hash list
         run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-before.json
 
+      # The plugin as installed, kept so the post-build check can tell an importer's
+      # re-serialized .meta from any other change.
+      - name: Keep a baseline copy of the installed plugin
+        run: |
+          rm -rf plugin-baseline
+          python3 -I - "game/$PROJECT" "$MANIFEST" plugin-baseline <<'PY'
+          import json, os, shutil, sys
+          project, manifest, out = sys.argv[1:]
+          for rel in json.load(open(manifest))["files"]:
+              src = os.path.join(project, rel)
+              if os.path.isfile(src):
+                  os.makedirs(os.path.dirname(os.path.join(out, rel)), exist_ok=True)
+                  shutil.copy2(src, os.path.join(out, rel))
+          PY
+
       - name: Scan for build hooks that reference the plugin
         run: python3 -I game-build/tools/scan_build_hooks.py "game/$PROJECT" --report hooks.json
 
@@ -219,7 +234,7 @@ jobs:
           exit $status
 
       - name: Re-verify plugin files after the build
-        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-after.json
+        run: python3 -I game-build/tools/verify_plugin.py "game/$PROJECT" "$MANIFEST" --report plugin-after.json --allow-import-rewrites plugin-baseline
 
       - name: Write the build predicate
         id: predicate
